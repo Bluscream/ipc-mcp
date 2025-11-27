@@ -23,25 +23,6 @@ public static class IpcTools
         return errorMessage;
     }
 
-    private static bool IsToolEnabled(string toolCategory)
-    {
-        // Check environment variable: IPC_MCP_ENABLED_TOOLS
-        // Format: comma-separated list like "pipes,processes,services" or "all"
-        var enabledTools = Environment.GetEnvironmentVariable("IPC_MCP_ENABLED_TOOLS") ?? "all";
-        
-        if (enabledTools.Equals("all", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-        
-        var categories = enabledTools.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return categories.Any(c => c.Equals(toolCategory, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static string GetDisabledMessage(string toolName, string category)
-    {
-        return $"Tool '{toolName}' is disabled. Enable it by setting environment variable IPC_MCP_ENABLED_TOOLS to include '{category}' or 'all'.";
-    }
 
     [McpServerTool, Description("List all available named pipes")]
     public static string ListNamedPipes(IServiceProvider serviceProvider)
@@ -110,28 +91,11 @@ public static class IpcTools
         }
     }
 
-    [McpServerTool, Description("Send message to named pipe")]
-    public static async Task<string> SendNamedPipeMessage(
+    [McpServerTool, Description("Send message to named pipe and wait for response, or just wait for a message. Optionally filters messages by regex pattern.")]
+    public static async Task<string> SendOrWaitNamedPipeMessage(
         IServiceProvider serviceProvider,
-        [Description("Name of the pipe to send to")] string pipeName,
-        [Description("Message to send")] string message,
-        [Description("Timeout in milliseconds")] int timeout = 5000)
-    {
-        try
-        {
-            var service = GetService<NamedPipeService>(serviceProvider);
-            return await service.SendNamedPipeMessage(pipeName, message, timeout);
-        }
-        catch (Exception ex)
-        {
-            return FormatError("send_named_pipe_message", ex);
-        }
-    }
-
-    [McpServerTool, Description("Wait for message on named pipe. First waits for the pipe to become available, then waits for a message. Optionally filters messages by regex pattern.")]
-    public static async Task<string> WaitForNamedPipeMessage(
-        IServiceProvider serviceProvider,
-        [Description("Name of the pipe to wait on")] string pipeName,
+        [Description("Name of the pipe")] string pipeName,
+        [Description("Optional message to send first. If not provided, only waits for incoming message.")] string? message = null,
         [Description("Timeout in milliseconds")] int timeout = 30000,
         [Description("Check interval in milliseconds when waiting for pipe")] int checkInterval = 500,
         [Description("Optional regex pattern to filter messages. Only returns when a message matches the pattern.")] string? pattern = null)
@@ -139,11 +103,11 @@ public static class IpcTools
         try
         {
             var service = GetService<NamedPipeService>(serviceProvider);
-            return await service.WaitForNamedPipeMessage(pipeName, timeout, checkInterval, pattern);
+            return await service.SendOrWaitNamedPipeMessage(pipeName, message, timeout, checkInterval, pattern);
         }
         catch (Exception ex)
         {
-            return FormatError("wait_for_named_pipe_message", ex);
+            return FormatError("send_or_wait_named_pipe_message", ex);
         }
     }
 
@@ -240,6 +204,10 @@ public static class IpcTools
         }
     }
 
+    // Process management tools - DISABLED BY DEFAULT
+    // Uncomment to enable these tools
+    /*
+
     [McpServerTool, Description("Start an application with admin privileges. Can optionally wait for the process to exit.")]
     public static string StartProcess(
         IServiceProvider serviceProvider,
@@ -291,7 +259,11 @@ public static class IpcTools
             return FormatError("kill_process", ex);
         }
     }
+    */
 
+    // Service management tools - DISABLED BY DEFAULT
+    // Uncomment to enable these tools
+    /*
     [McpServerTool, Description("List all Windows services with their status and start type.")]
     public static string ListServices(IServiceProvider serviceProvider)
     {
@@ -337,4 +309,5 @@ public static class IpcTools
             return FormatError("stop_service", ex);
         }
     }
+    */
 }
