@@ -11,6 +11,47 @@ A .NET 10 HTTP-based MCP server for Windows IPC operations.
 
 ## Setup
 
+### Option 1: Run as Windows Service (Recommended)
+
+Install as a Windows service that runs automatically with highest privileges:
+
+```powershell
+# Run PowerShell as Administrator
+.\install_service.ps1 -Token "your-secret-token-here"
+```
+
+The service will:
+- Run automatically on system startup
+- Run with LocalSystem privileges (highest available)
+- Log to `logs\stdout.log` and `logs\stderr.log`
+- Be accessible at `http://localhost:23481/mcp`
+
+**Service Management:**
+```powershell
+# Check status
+.\manage_service.ps1 status
+
+# Start/Stop/Restart
+.\manage_service.ps1 start
+.\manage_service.ps1 stop
+.\manage_service.ps1 restart
+
+# View logs
+.\manage_service.ps1 logs
+
+# Edit service configuration
+.\manage_service.ps1 edit
+
+# Remove service
+.\manage_service.ps1 remove
+```
+
+**Requirements:**
+- NSSM (Non-Sucking Service Manager) - will be installed automatically via winget if not found
+- Administrator privileges to install the service
+
+### Option 2: Run Manually
+
 1. Build the server:
 ```powershell
 cd IpcMcp
@@ -22,7 +63,7 @@ dotnet build -c Release
 .\run_server.ps1 -Token "your-secret-token-here"
 ```
 
-3. Configure in `mcp.json`:
+### Configure in `mcp.json`:
 ```json
 {
   "ipc": {
@@ -105,6 +146,7 @@ $env:IPC_MCP_PORT = "9090"
 
 ⚠️ **This server provides access to Windows IPC mechanisms!**
 
-- Run with Administrator privileges for full access
+- Run with Administrator privileges for full access (service runs as LocalSystem)
 - Some operations may require elevated permissions
 - Use with caution in production environments
+- The service installation script sets the service to run as LocalSystem, which has the highest privileges available

@@ -55,3 +55,4 @@ $RECYCLE.BIN/
 /IpcMcp/bin/
 /IpcMcp/obj/
 /.references/
+logs/
