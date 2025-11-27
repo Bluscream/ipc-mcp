@@ -56,3 +56,4 @@ $RECYCLE.BIN/
 /IpcMcp/obj/
 /.references/
 logs/
+*.zip
