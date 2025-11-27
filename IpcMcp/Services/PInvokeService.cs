@@ -1,49 +1,74 @@
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace IpcMcp.Services;
 
 public class PInvokeService
 {
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-    private static extern uint QueryDosDevice(string? lpDeviceName, System.Text.StringBuilder lpTargetPath, uint ucchMax);
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    private static extern IntPtr FindWindow(string? lpClassName, string? lpWindowName);
+    
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+    
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, StringBuilder lParam);
+    
+    private const uint WM_SETTEXT = 0x000C;
+    private const uint WM_COPYDATA = 0x004A;
 
     public List<string> ListPInvokePipes()
     {
-        // This is a placeholder - actual implementation would use P/Invoke
-        // to query Windows for pipe information
+        // Use the same method as named pipes since they're the same thing
+        // This is just an alternative way to access them
         var pipes = new List<string>();
-        
         try
         {
-            // Query DOS devices to find pipes
-            var sb = new System.Text.StringBuilder(1024);
-            uint result = QueryDosDevice(null, sb, (uint)sb.Capacity);
-            
-            if (result > 0)
+            var pipeNames = Directory.GetFiles(@"\\.\pipe\");
+            foreach (var pipe in pipeNames)
             {
-                var devices = sb.ToString().Split('\0');
-                foreach (var device in devices)
-                {
-                    if (device.StartsWith("PIPE"))
-                    {
-                        pipes.Add(device);
-                    }
-                }
+                pipes.Add(pipe.Replace(@"\\.\pipe\", ""));
             }
         }
         catch (Exception ex)
         {
             throw new Exception($"Failed to list P/Invoke pipes: {ex.Message}");
         }
-        
         return pipes;
     }
 
     public string SendPInvokeMessage(string target, string message)
     {
-        // Placeholder for P/Invoke-based IPC
-        // Would need specific Windows API calls based on the IPC mechanism
-        return $"P/Invoke message sent to {target}: {message}";
+        try
+        {
+            // Try to find window by class name or window name
+            IntPtr hWnd = FindWindow(target, null);
+            if (hWnd == IntPtr.Zero)
+            {
+                // Try by window name
+                hWnd = FindWindow(null, target);
+            }
+            
+            if (hWnd == IntPtr.Zero)
+            {
+                throw new Exception($"Window '{target}' not found");
+            }
+            
+            // Send WM_SETTEXT message
+            var messageBytes = Encoding.UTF8.GetBytes(message);
+            var sb = new StringBuilder(message);
+            var result = SendMessage(hWnd, WM_SETTEXT, IntPtr.Zero, sb);
+            
+            if (result == IntPtr.Zero)
+            {
+                throw new Exception($"Failed to send message to window '{target}'");
+            }
+            
+            return $"Message sent to window '{target}' successfully";
+        }
+        catch (Exception ex)
+        {
+            throw new Exception($"Failed to send P/Invoke message: {ex.Message}");
+        }
     }
 }
-

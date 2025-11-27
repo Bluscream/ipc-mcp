@@ -1,9 +1,11 @@
 using System.Security.Principal;
+using System.Security.Claims;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
-using System.Security.Claims;
+using ModelContextProtocol.Server;
+using ModelContextProtocol.AspNetCore;
 using IpcMcp.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -27,19 +29,25 @@ if (string.IsNullOrEmpty(token))
 }
 
 // Add services
-builder.Services.AddControllers();
 builder.Services.AddSingleton<NamedPipeService>();
 builder.Services.AddSingleton<MemoryMappedFileService>();
 builder.Services.AddSingleton<PInvokeService>();
 builder.Services.AddSingleton<ComService>();
-
-// Store token for middleware
+builder.Services.AddSingleton<ProcessService>();
 builder.Services.AddSingleton(new TokenService(token));
 
 // Configure authentication
 builder.Services.AddAuthentication("Token")
     .AddScheme<TokenAuthenticationSchemeOptions, TokenAuthenticationHandler>(
         "Token", options => { });
+
+builder.Services.AddAuthorization();
+
+// Add MCP server with HTTP transport
+builder.Services
+    .AddMcpServer()
+    .WithHttpTransport()
+    .WithToolsFromAssembly();
 
 // Configure CORS - only allow localhost
 builder.Services.AddCors(options =>
@@ -78,12 +86,14 @@ app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapControllers().RequireAuthorization();
+// Map MCP server with authorization at /mcp endpoint
+app.MapMcp("/mcp").RequireAuthorization();
 
 Console.WriteLine($"IPC MCP Server starting on http://localhost:{port}");
 Console.WriteLine("MCP Protocol: HTTP");
 Console.WriteLine("Authentication: Token required");
 Console.WriteLine("Binding: localhost only");
+Console.WriteLine("MCP Endpoint: /mcp");
 
 app.Run();
 
@@ -124,9 +134,8 @@ public class TokenAuthenticationHandler : AuthenticationHandler<TokenAuthenticat
         IOptionsMonitor<TokenAuthenticationSchemeOptions> options,
         ILoggerFactory logger,
         UrlEncoder encoder,
-        ISystemClock clock,
         TokenService tokenService)
-        : base(options, logger, encoder, clock)
+        : base(options, logger, encoder)
     {
         _tokenService = tokenService;
     }
@@ -146,9 +155,9 @@ public class TokenAuthenticationHandler : AuthenticationHandler<TokenAuthenticat
             var providedToken = authHeader.Substring("Bearer ".Length).Trim();
             if (providedToken == _tokenService.Token)
             {
-                var claims = new[] { new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Name, "authenticated") };
-                var identity = new System.Security.Claims.ClaimsIdentity(claims, Scheme.Name);
-                var principal = new System.Security.Claims.ClaimsPrincipal(identity);
+                var claims = new[] { new Claim(ClaimTypes.Name, "authenticated") };
+                var identity = new ClaimsIdentity(claims, Scheme.Name);
+                var principal = new ClaimsPrincipal(identity);
                 var ticket = new AuthenticationTicket(principal, Scheme.Name);
                 return Task.FromResult(AuthenticateResult.Success(ticket));
             }
@@ -158,9 +167,9 @@ public class TokenAuthenticationHandler : AuthenticationHandler<TokenAuthenticat
         var apiToken = Request.Headers["X-API-Token"].FirstOrDefault();
         if (apiToken == _tokenService.Token)
         {
-            var claims = new[] { new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Name, "authenticated") };
-            var identity = new System.Security.Claims.ClaimsIdentity(claims, Scheme.Name);
-            var principal = new System.Security.Claims.ClaimsPrincipal(identity);
+            var claims = new[] { new Claim(ClaimTypes.Name, "authenticated") };
+            var identity = new ClaimsIdentity(claims, Scheme.Name);
+            var principal = new ClaimsPrincipal(identity);
             var ticket = new AuthenticationTicket(principal, Scheme.Name);
             return Task.FromResult(AuthenticateResult.Success(ticket));
         }

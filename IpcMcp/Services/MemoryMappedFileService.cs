@@ -7,9 +7,17 @@ public class MemoryMappedFileService
 {
     public List<string> ListMappedFiles()
     {
-        // Note: Windows doesn't provide a direct API to list all memory-mapped files
-        // This would require P/Invoke to QueryDosDevice or similar
-        // For now, return empty list with note
+        // Note: Windows doesn't provide a direct API to enumerate all memory-mapped files
+        // across all processes. This would require:
+        // 1. Enumerating all processes (requires admin)
+        // 2. Using NtQuerySystemInformation with SystemHandleInformation (undocumented)
+        // 3. Or using WMI which is slow and may not show all mappings
+        
+        // For now, we return an empty list as there's no reliable way to enumerate
+        // all memory-mapped files without using undocumented APIs or requiring
+        // significant privileges and process enumeration.
+        
+        // Users should know the map name to use read_mapped_file or send_mapped_file_message
         return new List<string>();
     }
 
@@ -58,4 +66,3 @@ public class MemoryMappedFileService
         return "Message written successfully";
     }
 }
-
