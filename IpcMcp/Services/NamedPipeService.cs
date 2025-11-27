@@ -192,7 +192,7 @@ public class NamedPipeService
         }
     }
 
-    public async Task<string> SendOrWaitNamedPipeMessage(string pipeName, string? message = null, int timeoutMs = 30000, int checkIntervalMs = 500, string? pattern = null)
+    public async Task<string> NamedPipe(string pipeName, string? message = null, int timeoutMs = 30000, int checkIntervalMs = 500, string? pattern = null)
     {
         try
         {
@@ -313,26 +313,23 @@ public class NamedPipeService
                     }
                 }
                 
-                // Now wait for and read the response
-                using var reader = new StreamReader(client, Encoding.UTF8);
-                
-                // If no pattern, read until end or timeout
+                // If pattern is null, just return success (pipe exists)
+                // If pattern is ".*", wait for response
                 if (regex == null)
                 {
-                    using var readCts = new CancellationTokenSource(remainingTime);
-                    
-                    var readTask = reader.ReadToEndAsync(readCts.Token);
-                    var readTimeoutTask = Task.Delay(remainingTime, CancellationToken.None);
-                    var readCompleted = await Task.WhenAny(readTask, readTimeoutTask);
-                    
-                    if (readCompleted == readTimeoutTask)
+                    // Just wait for pipe to exist (already connected), return success
+                    if (string.IsNullOrEmpty(message))
                     {
-                        readCts.Cancel();
-                        throw new TimeoutException($"Timeout waiting for message on pipe '{pipeName}' after {timeoutMs}ms total");
+                        return $"Named pipe '{pipeName}' is now available";
                     }
-                    
-                    return await readTask;
+                    else
+                    {
+                        return $"Message sent to pipe '{pipeName}' successfully";
+                    }
                 }
+                
+                // Now wait for and read the response (pattern is set, e.g., ".*")
+                using var reader = new StreamReader(client, Encoding.UTF8);
                 
                 // With pattern, read line by line or in chunks and check each against pattern
                 var buffer = new StringBuilder();

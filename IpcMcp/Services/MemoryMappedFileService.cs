@@ -65,4 +65,19 @@ public class MemoryMappedFileService
         WriteMappedFile(mapName, message, offset);
         return "Message written successfully";
     }
+
+    public string MappedFile(string mapName, string? message = null, long offset = 0, int length = 4096)
+    {
+        if (!string.IsNullOrEmpty(message))
+        {
+            // Write mode
+            WriteMappedFile(mapName, message, offset);
+            return "Message written successfully";
+        }
+        else
+        {
+            // Read mode
+            return ReadMappedFile(mapName, offset, length);
+        }
+    }
 }

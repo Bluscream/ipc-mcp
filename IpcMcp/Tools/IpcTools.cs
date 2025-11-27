@@ -6,7 +6,7 @@ using System;
 namespace IpcMcp.Tools;
 
 [McpServerToolType]
-public static class IpcTools
+public static partial class IpcTools
 {
     private static T GetService<T>(IServiceProvider serviceProvider) where T : class
     {
@@ -23,143 +23,46 @@ public static class IpcTools
         return errorMessage;
     }
 
-
-    [McpServerTool, Description("List all available named pipes")]
-    public static string ListNamedPipes(IServiceProvider serviceProvider)
-    {
-        try
-        {
-            var service = GetService<NamedPipeService>(serviceProvider);
-            return string.Join("\n", service.ListNamedPipes());
-        }
-        catch (Exception ex)
-        {
-            return FormatError("list_named_pipes", ex);
-        }
-    }
-
-    [McpServerTool, Description("Find named pipes matching a pattern")]
-    public static string FindNamedPipe(
-        IServiceProvider serviceProvider,
-        [Description("The search pattern")] string pattern,
-        [Description("Whether the search is case-sensitive")] bool caseSensitive = false)
-    {
-        try
-        {
-            var service = GetService<NamedPipeService>(serviceProvider);
-            var pipes = service.FindNamedPipe(pattern, caseSensitive);
-            return string.Join("\n", pipes);
-        }
-        catch (Exception ex)
-        {
-            return FormatError("find_named_pipe", ex);
-        }
-    }
-
-    [McpServerTool, Description("Wait for a named pipe to become available")]
-    public static async Task<string> WaitForNamedPipe(
-        IServiceProvider serviceProvider,
-        [Description("Name of the pipe to wait for")] string pipeName,
-        [Description("Timeout in milliseconds")] int timeout = 30000,
-        [Description("Check interval in milliseconds")] int checkInterval = 500)
-    {
-        try
-        {
-            var service = GetService<NamedPipeService>(serviceProvider);
-            return await service.WaitForNamedPipe(pipeName, timeout, checkInterval);
-        }
-        catch (Exception ex)
-        {
-            return FormatError("wait_for_named_pipe", ex);
-        }
-    }
-
-    [McpServerTool, Description("Read from a named pipe")]
-    public static async Task<string> ReadNamedPipe(
-        IServiceProvider serviceProvider,
-        [Description("Name of the pipe to read from")] string pipeName,
-        [Description("Timeout in milliseconds")] int timeout = 5000)
-    {
-        try
-        {
-            var service = GetService<NamedPipeService>(serviceProvider);
-            return await service.ReadNamedPipe(pipeName, timeout);
-        }
-        catch (Exception ex)
-        {
-            return FormatError("read_named_pipe", ex);
-        }
-    }
-
-    [McpServerTool, Description("Send message to named pipe and wait for response, or just wait for a message. Optionally filters messages by regex pattern.")]
-    public static async Task<string> SendOrWaitNamedPipeMessage(
+    [McpServerTool, Description("Interact with a named pipe. If pattern is set to '.*', waits for a response. Otherwise, just waits for the pipe to exist. Optionally sends a message first.")]
+    public static async Task<string> NamedPipe(
         IServiceProvider serviceProvider,
         [Description("Name of the pipe")] string pipeName,
-        [Description("Optional message to send first. If not provided, only waits for incoming message.")] string? message = null,
+        [Description("Optional message to send first")] string? message = null,
         [Description("Timeout in milliseconds")] int timeout = 30000,
         [Description("Check interval in milliseconds when waiting for pipe")] int checkInterval = 500,
-        [Description("Optional regex pattern to filter messages. Only returns when a message matches the pattern.")] string? pattern = null)
+        [Description("Regex pattern to filter messages. Set to '.*' to wait for any response. If null, just waits for pipe to exist.")] string? pattern = null)
     {
         try
         {
             var service = GetService<NamedPipeService>(serviceProvider);
-            return await service.SendOrWaitNamedPipeMessage(pipeName, message, timeout, checkInterval, pattern);
+            return await service.NamedPipe(pipeName, message, timeout, checkInterval, pattern);
         }
         catch (Exception ex)
         {
-            return FormatError("send_or_wait_named_pipe_message", ex);
+            return FormatError("named_pipe", ex);
         }
     }
 
-    [McpServerTool, Description("Read from memory-mapped file")]
-    public static string ReadMappedFile(
+
+    [McpServerTool, Description("Read from or write to a memory-mapped file. If message is provided, writes to the file. Otherwise, reads from it.")]
+    public static string MappedFile(
         IServiceProvider serviceProvider,
         [Description("Name of the memory-mapped file")] string mapName,
-        [Description("Offset to start reading from")] long offset = 0,
-        [Description("Number of bytes to read")] int length = 4096)
+        [Description("Optional message to write. If not provided, reads from the file.")] string? message = null,
+        [Description("Offset to start reading/writing from")] long offset = 0,
+        [Description("Number of bytes to read (only used when reading)")] int length = 4096)
     {
         try
         {
             var service = GetService<MemoryMappedFileService>(serviceProvider);
-            return service.ReadMappedFile(mapName, offset, length);
+            return service.MappedFile(mapName, message, offset, length);
         }
         catch (Exception ex)
         {
-            return FormatError("read_mapped_file", ex);
+            return FormatError("mapped_file", ex);
         }
     }
 
-    [McpServerTool, Description("Write to memory-mapped file")]
-    public static string SendMappedFileMessage(
-        IServiceProvider serviceProvider,
-        [Description("Name of the memory-mapped file")] string mapName,
-        [Description("Message to write")] string message,
-        [Description("Offset to start writing at")] long offset = 0)
-    {
-        try
-        {
-            var service = GetService<MemoryMappedFileService>(serviceProvider);
-            return service.SendMappedFileMessage(mapName, message, offset);
-        }
-        catch (Exception ex)
-        {
-            return FormatError("send_mapped_file_message", ex);
-        }
-    }
-
-    [McpServerTool, Description("List available COM objects")]
-    public static string ListComObjects(IServiceProvider serviceProvider)
-    {
-        try
-        {
-            var service = GetService<ComService>(serviceProvider);
-            return string.Join("\n", service.ListComObjects());
-        }
-        catch (Exception ex)
-        {
-            return FormatError("list_com_objects", ex);
-        }
-    }
 
     [McpServerTool, Description("Send message via COM")]
     public static string SendComMessage(
@@ -186,7 +89,7 @@ public static class IpcTools
         }
     }
 
-    [McpServerTool, Description("Execute a shell command with admin privileges. Returns the command output.")]
+    [McpServerTool, Description("Execute a shell command. Returns the command output. Will run as admin if the server is running as admin.")]
     public static async Task<string> ShellExecute(
         IServiceProvider serviceProvider,
         [Description("Command or executable to run")] string command,
@@ -203,10 +106,6 @@ public static class IpcTools
             return FormatError("shell_execute", ex);
         }
     }
-
-    // Process management tools - DISABLED BY DEFAULT
-    // Uncomment to enable these tools
-    /*
 
     [McpServerTool, Description("Start an application with admin privileges. Can optionally wait for the process to exit.")]
     public static string StartProcess(
@@ -227,87 +126,142 @@ public static class IpcTools
         }
     }
 
-    [McpServerTool, Description("List all running processes with their PIDs, names, and command lines.")]
-    public static string ListProcesses(
-        IServiceProvider serviceProvider,
-        [Description("Timeout in milliseconds")] int timeout = 30000)
-    {
-        try
-        {
-            var service = GetService<ProcessService>(serviceProvider);
-            return service.ListProcesses(timeout);
-        }
-        catch (Exception ex)
-        {
-            return FormatError("list_processes", ex);
-        }
-    }
 
-    [McpServerTool, Description("Kill one or more processes by PID or name. Returns success/failure status for each process.")]
-    public static string KillProcess(
+    [McpServerTool, Description("List all available IPC resources (processes, windows, COM objects, named pipes, services, memory-mapped files) as a compact JSON object.")]
+    public static string List(
         IServiceProvider serviceProvider,
-        [Description("List of process names to kill (e.g., [\"notepad.exe\", \"chrome.exe\"])")] List<string>? names = null,
-        [Description("List of process IDs to kill (e.g., [1234, 5678])")] List<int>? ids = null)
+        [Description("Timeout in milliseconds for listing processes")] int processTimeout = 30000)
     {
         try
         {
-            var service = GetService<ProcessService>(serviceProvider);
-            return service.KillProcess(names, ids);
-        }
-        catch (Exception ex)
-        {
-            return FormatError("kill_process", ex);
-        }
-    }
-    */
+            var result = new Dictionary<string, object>();
 
-    // Service management tools - DISABLED BY DEFAULT
-    // Uncomment to enable these tools
-    /*
-    [McpServerTool, Description("List all Windows services with their status and start type.")]
-    public static string ListServices(IServiceProvider serviceProvider)
-    {
-        try
-        {
-            var service = GetService<ServiceService>(serviceProvider);
-            return service.ListServices();
-        }
-        catch (Exception ex)
-        {
-            return FormatError("list_services", ex);
-        }
-    }
+            // List Processes
+            try
+            {
+                var processService = GetService<ProcessService>(serviceProvider);
+                var processText = processService.ListProcesses(processTimeout);
+                var processes = new List<Dictionary<string, string>>();
+                
+                var lines = processText.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                if (lines.Length > 2) // Skip header lines
+                {
+                    for (int i = 2; i < lines.Length; i++)
+                    {
+                        var parts = lines[i].Split('\t');
+                        if (parts.Length >= 3)
+                        {
+                            processes.Add(new Dictionary<string, string>
+                            {
+                                { "PID", parts[0] },
+                                { "Name", parts[1] },
+                                { "CommandLine", parts.Length > 2 ? parts[2] : "" }
+                            });
+                        }
+                    }
+                }
+                result["Processes"] = processes;
+            }
+            catch (Exception ex)
+            {
+                result["Processes"] = new[] { new { Error = ex.Message } };
+            }
 
-    [McpServerTool, Description("Start a Windows service.")]
-    public static string StartService(
-        IServiceProvider serviceProvider,
-        [Description("Name of the service to start")] string serviceName)
-    {
-        try
-        {
-            var service = GetService<ServiceService>(serviceProvider);
-            return service.StartService(serviceName);
-        }
-        catch (Exception ex)
-        {
-            return FormatError("start_service", ex);
-        }
-    }
+            // List Windows
+            try
+            {
+                var windowService = GetService<WindowService>(serviceProvider);
+                var windows = windowService.ListWindows();
+                result["Windows"] = windows.Select(w => new Dictionary<string, object>
+                {
+                    { "Handle", w.Handle.ToString() },
+                    { "Title", w.Title },
+                    { "ClassName", w.ClassName },
+                    { "ProcessId", w.ProcessId },
+                    { "ThreadId", w.ThreadId },
+                    { "IsVisible", w.IsVisible },
+                    { "IsEnabled", w.IsEnabled },
+                    { "X", w.X },
+                    { "Y", w.Y },
+                    { "Width", w.Width },
+                    { "Height", w.Height }
+                }).ToList();
+            }
+            catch (Exception ex)
+            {
+                result["Windows"] = new[] { new { Error = ex.Message } };
+            }
 
-    [McpServerTool, Description("Stop a Windows service.")]
-    public static string StopService(
-        IServiceProvider serviceProvider,
-        [Description("Name of the service to stop")] string serviceName)
-    {
-        try
-        {
-            var service = GetService<ServiceService>(serviceProvider);
-            return service.StopService(serviceName);
+            // List COM Objects
+            try
+            {
+                var comService = GetService<ComService>(serviceProvider);
+                result["COM Objects"] = comService.ListComObjects();
+            }
+            catch (Exception ex)
+            {
+                result["COM Objects"] = new[] { new { Error = ex.Message } };
+            }
+
+            // List Named Pipes
+            try
+            {
+                var namedPipeService = GetService<NamedPipeService>(serviceProvider);
+                result["Named Pipes"] = namedPipeService.ListNamedPipes();
+            }
+            catch (Exception ex)
+            {
+                result["Named Pipes"] = new[] { new { Error = ex.Message } };
+            }
+
+            // List Services
+            try
+            {
+                var serviceService = GetService<ServiceService>(serviceProvider);
+                var serviceText = serviceService.ListServices();
+                var services = new List<Dictionary<string, string>>();
+                
+                var lines = serviceText.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                if (lines.Length > 2) // Skip header lines
+                {
+                    for (int i = 2; i < lines.Length; i++)
+                    {
+                        var parts = lines[i].Split('\t');
+                        if (parts.Length >= 4)
+                        {
+                            services.Add(new Dictionary<string, string>
+                            {
+                                { "Name", parts[0] },
+                                { "DisplayName", parts[1] },
+                                { "Status", parts[2] },
+                                { "StartType", parts[3] }
+                            });
+                        }
+                    }
+                }
+                result["Services"] = services;
+            }
+            catch (Exception ex)
+            {
+                result["Services"] = new[] { new { Error = ex.Message } };
+            }
+
+            // List Memory-Mapped Files
+            try
+            {
+                var mmfService = GetService<MemoryMappedFileService>(serviceProvider);
+                result["Memory-Mapped Files"] = mmfService.ListMappedFiles();
+            }
+            catch (Exception ex)
+            {
+                result["Memory-Mapped Files"] = new[] { new { Error = ex.Message } };
+            }
+
+            return System.Text.Json.JsonSerializer.Serialize(result, new System.Text.Json.JsonSerializerOptions { WriteIndented = false });
         }
         catch (Exception ex)
         {
-            return FormatError("stop_service", ex);
+            return FormatError("list", ex);
         }
     }
-    */
 }
