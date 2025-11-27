@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 using Microsoft.Win32;
 
 namespace IpcMcp.Services;
@@ -78,6 +79,93 @@ public class ComService
         }
         
         return comObjects.Distinct().OrderBy(x => x).ToList();
+    }
+
+    public string QueryComObject(string? progId = null, string? clsid = null)
+    {
+        try
+        {
+            var result = new StringBuilder();
+            
+            if (!string.IsNullOrEmpty(progId))
+            {
+                // Query by ProgID
+                var type = Type.GetTypeFromProgID(progId);
+                if (type == null)
+                {
+                    throw new Exception($"COM object '{progId}' not found");
+                }
+                
+                result.AppendLine($"ProgID: {progId}");
+                result.AppendLine($"Type: {type.FullName}");
+                result.AppendLine($"CLSID: {type.GUID}");
+                result.AppendLine("\nMethods:");
+                
+                var methods = type.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                foreach (var method in methods.OrderBy(m => m.Name))
+                {
+                    var parameters = method.GetParameters();
+                    var paramList = string.Join(", ", parameters.Select(p => $"{p.ParameterType.Name} {p.Name}"));
+                    result.AppendLine($"  {method.ReturnType.Name} {method.Name}({paramList})");
+                }
+                
+                result.AppendLine("\nProperties:");
+                var properties = type.GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                foreach (var prop in properties.OrderBy(p => p.Name))
+                {
+                    result.AppendLine($"  {prop.PropertyType.Name} {prop.Name} {{ get; {(prop.CanWrite ? "set; " : "")}}}");
+                }
+            }
+            else if (!string.IsNullOrEmpty(clsid))
+            {
+                // Query by CLSID
+                var guid = Guid.Parse(clsid);
+                var type = Type.GetTypeFromCLSID(guid);
+                if (type == null)
+                {
+                    throw new Exception($"COM object with CLSID '{clsid}' not found");
+                }
+                
+                result.AppendLine($"CLSID: {clsid}");
+                result.AppendLine($"Type: {type.FullName}");
+                
+                // Try to find ProgID from registry
+                using var classesRoot = Registry.ClassesRoot;
+                using var clsidKey = classesRoot.OpenSubKey($"CLSID\\{{{clsid}}}");
+                if (clsidKey != null)
+                {
+                    using var progIdKey = clsidKey.OpenSubKey("ProgID");
+                    if (progIdKey != null)
+                    {
+                        var foundProgId = progIdKey.GetValue(null)?.ToString();
+                        if (!string.IsNullOrEmpty(foundProgId))
+                        {
+                            result.AppendLine($"ProgID: {foundProgId}");
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // List all COM objects (return list)
+                var comObjects = ListComObjects();
+                result.AppendLine($"Found {comObjects.Count} COM objects:");
+                foreach (var obj in comObjects.Take(100)) // Limit to first 100
+                {
+                    result.AppendLine($"  {obj}");
+                }
+                if (comObjects.Count > 100)
+                {
+                    result.AppendLine($"  ... and {comObjects.Count - 100} more");
+                }
+            }
+            
+            return result.ToString().TrimEnd();
+        }
+        catch (Exception ex)
+        {
+            throw new Exception($"Failed to query COM object: {ex.Message}");
+        }
     }
 
     public string SendComMessage(string progId, string method, Dictionary<string, object>? parameters = null)

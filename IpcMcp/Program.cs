@@ -36,6 +36,7 @@ builder.Services.AddSingleton<ComService>();
 builder.Services.AddSingleton<ProcessService>();
 builder.Services.AddSingleton<ServiceService>();
 builder.Services.AddSingleton<WindowService>();
+builder.Services.AddSingleton<RegistryService>();
 builder.Services.AddSingleton(new TokenService(token));
 
 // Configure authentication

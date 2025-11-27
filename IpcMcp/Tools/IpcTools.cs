@@ -63,29 +63,70 @@ public static partial class IpcTools
         }
     }
 
-
-    [McpServerTool, Description("Send message via COM")]
-    public static string SendComMessage(
+    [McpServerTool, Description("Read from or write to the Windows registry. If valueName and value are provided, writes to the registry. Otherwise, reads from it.")]
+    public static string Registry(
         IServiceProvider serviceProvider,
-        [Description("COM ProgID")] string progId,
-        [Description("Method to call")] string method,
-        [Description("Parameters as JSON string")] string? parameters = null)
+        [Description("Registry key path (e.g., 'Software\\MyApp\\Settings')")] string keyPath,
+        [Description("Registry value name (optional, if not provided, lists all values in the key)")] string? valueName = null,
+        [Description("Value to write (optional, if not provided, reads from registry)")] string? value = null,
+        [Description("Value type for writing (String, DWord, QWord, Binary, MultiString, ExpandString)")] string valueType = "String",
+        [Description("Registry hive (HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, HKEY_CLASSES_ROOT, HKEY_USERS, HKEY_CURRENT_CONFIG)")] string hive = "HKEY_CURRENT_USER")
+    {
+        try
+        {
+            var service = GetService<RegistryService>(serviceProvider);
+            
+            if (!string.IsNullOrEmpty(value) && !string.IsNullOrEmpty(valueName))
+            {
+                // Write mode
+                return service.WriteRegistry(keyPath, valueName, value, valueType, hive);
+            }
+            else
+            {
+                // Read mode
+                return service.ReadRegistry(keyPath, valueName, hive);
+            }
+        }
+        catch (Exception ex)
+        {
+            return FormatError("registry", ex);
+        }
+    }
+
+
+    [McpServerTool, Description("Query COM database or call COM object methods. If method is provided, calls the method. Otherwise, queries the COM object or lists all COM objects.")]
+    public static string Com(
+        IServiceProvider serviceProvider,
+        [Description("COM ProgID (optional if querying)")] string? progId = null,
+        [Description("Method to call (optional, if not provided, queries the COM object)")] string? method = null,
+        [Description("Parameters as JSON string (only used when calling a method)")] string? parameters = null,
+        [Description("CLSID to query (alternative to ProgID)")] string? clsid = null)
     {
         try
         {
             var service = GetService<ComService>(serviceProvider);
-            Dictionary<string, object>? paramsDict = null;
             
-            if (!string.IsNullOrEmpty(parameters))
+            // If method is provided, call it
+            if (!string.IsNullOrEmpty(method) && !string.IsNullOrEmpty(progId))
             {
-                paramsDict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(parameters);
+                Dictionary<string, object>? paramsDict = null;
+                
+                if (!string.IsNullOrEmpty(parameters))
+                {
+                    paramsDict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(parameters);
+                }
+                
+                return service.SendComMessage(progId, method, paramsDict);
             }
-            
-            return service.SendComMessage(progId, method, paramsDict);
+            else
+            {
+                // Query COM database
+                return service.QueryComObject(progId, clsid);
+            }
         }
         catch (Exception ex)
         {
-            return FormatError("send_com_message", ex);
+            return FormatError("com", ex);
         }
     }
 
