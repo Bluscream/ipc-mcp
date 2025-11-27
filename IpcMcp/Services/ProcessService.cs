@@ -2,110 +2,469 @@ using System.Diagnostics;
 using System.Text;
 using System.Threading;
 using System.Management;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+using System.Security;
 
 namespace IpcMcp.Services;
 
 public class ProcessService
 {
-    public async Task<string> ShellExecute(string command, string? arguments = null, int timeoutMs = 30000)
+    // Windows API P/Invoke declarations for user session and elevation
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    private static extern bool WTSQueryUserToken(uint SessionId, out IntPtr phToken);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WTSGetActiveConsoleSessionId();
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    private static extern bool CreateProcessAsUser(
+        IntPtr hToken,
+        string? lpApplicationName,
+        string lpCommandLine,
+        IntPtr lpProcessAttributes,
+        IntPtr lpThreadAttributes,
+        bool bInheritHandles,
+        uint dwCreationFlags,
+        IntPtr lpEnvironment,
+        string? lpCurrentDirectory,
+        ref STARTUPINFO lpStartupInfo,
+        out PROCESS_INFORMATION lpProcessInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool DuplicateTokenEx(
+        IntPtr hExistingToken,
+        uint dwDesiredAccess,
+        IntPtr lpTokenAttributes,
+        SECURITY_IMPERSONATION_LEVEL ImpersonationLevel,
+        TOKEN_TYPE TokenType,
+        out IntPtr phNewToken);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetTokenInformation(
+        IntPtr TokenHandle,
+        TOKEN_INFORMATION_CLASS TokenInformationClass,
+        ref uint TokenInformation,
+        uint TokenInformationLength);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
     {
-        try
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX;
+        public int dwY;
+        public int dwXSize;
+        public int dwYSize;
+        public int dwXCountChars;
+        public int dwYCountChars;
+        public int dwFillAttribute;
+        public int dwFlags;
+        public short wShowWindow;
+        public short cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput;
+        public IntPtr hStdOutput;
+        public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public int dwProcessId;
+        public int dwThreadId;
+    }
+
+    private enum SECURITY_IMPERSONATION_LEVEL
+    {
+        SecurityAnonymous = 0,
+        SecurityIdentification = 1,
+        SecurityImpersonation = 2,
+        SecurityDelegation = 3
+    }
+
+    private enum TOKEN_TYPE
+    {
+        TokenPrimary = 1,
+        TokenImpersonation = 2
+    }
+
+    private enum TOKEN_INFORMATION_CLASS
+    {
+        TokenSessionId = 12
+    }
+
+    private const uint TOKEN_QUERY = 0x0008;
+    private const uint TOKEN_DUPLICATE = 0x0002;
+    private const uint TOKEN_ADJUST_DEFAULT = 0x0080;
+    private const uint TOKEN_ADJUST_SESSIONID = 0x0100;
+    private const uint TOKEN_ASSIGN_PRIMARY = 0x0001;
+    private const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
+    private const int STARTF_USESTDHANDLES = 0x00000100;
+
+    private ProcessWindowStyle ParseWindowStyle(string? windowStyle)
+    {
+        if (string.IsNullOrWhiteSpace(windowStyle))
         {
-            var processInfo = new ProcessStartInfo
-            {
-                FileName = command,
-                Arguments = arguments ?? "",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-                WindowStyle = ProcessWindowStyle.Hidden
-            };
-
-            using var process = new Process { StartInfo = processInfo };
-            var outputBuilder = new StringBuilder();
-            var errorBuilder = new StringBuilder();
-
-            process.OutputDataReceived += (sender, e) =>
-            {
-                if (e.Data != null)
-                    outputBuilder.AppendLine(e.Data);
-            };
-
-            process.ErrorDataReceived += (sender, e) =>
-            {
-                if (e.Data != null)
-                    errorBuilder.AppendLine(e.Data);
-            };
-
-            process.Start();
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-
-            using var cts = new CancellationTokenSource(timeoutMs);
-            try
-            {
-                await Task.Run(() => process.WaitForExit(), cts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                process.Kill();
-                throw new TimeoutException($"Command '{command}' timed out after {timeoutMs}ms");
-            }
-
-            var output = outputBuilder.ToString().TrimEnd();
-            var error = errorBuilder.ToString().TrimEnd();
-
-            if (process.ExitCode != 0)
-            {
-                var errorMsg = string.IsNullOrEmpty(error) ? "Command failed" : error;
-                return $"Exit code: {process.ExitCode}\n{errorMsg}\n{output}";
-            }
-
-            return string.IsNullOrEmpty(output) ? "Command executed successfully (no output)" : output;
+            return ProcessWindowStyle.Normal;
         }
-        catch (OperationCanceledException)
+
+        return windowStyle.Trim().ToLowerInvariant() switch
         {
-            throw new TimeoutException($"Command '{command}' timed out after {timeoutMs}ms");
+            "hidden" => ProcessWindowStyle.Hidden,
+            "minimized" => ProcessWindowStyle.Minimized,
+            "maximized" => ProcessWindowStyle.Maximized,
+            "normal" => ProcessWindowStyle.Normal,
+            _ => ProcessWindowStyle.Normal
+        };
+    }
+
+    private async Task WaitForProcessExit(Process process, int timeoutMs, string processName)
+    {
+        if (timeoutMs == -1)
+        {
+            // Infinite wait - no timeout, use WaitForExitAsync for proper async handling
+            await process.WaitForExitAsync();
         }
-        catch (Exception ex)
+        else
         {
-            throw new Exception($"Failed to execute command '{command}': {ex.Message}");
+            // Use timeout as safety measure
+            var waitTask = process.WaitForExitAsync();
+            var timeoutTask = Task.Delay(timeoutMs);
+            var completedTask = await Task.WhenAny(waitTask, timeoutTask);
+            
+            if (completedTask == timeoutTask)
+            {
+                // Timeout occurred - kill the process
+                try
+                {
+                    process.Kill();
+                }
+                catch
+                {
+                    // Process might have already exited
+                }
+                
+                // Wait a moment for kill to take effect
+                await Task.Delay(100);
+                
+                throw new TimeoutException($"Process '{processName}' timed out after {timeoutMs}ms");
+            }
+            
+            // Process exited normally - ensure waitTask completed
+            await waitTask;
         }
     }
 
-    public string StartProcess(string executable, string? arguments = null, bool waitForExit = false, int timeoutMs = 30000)
+    private uint GetUserSessionId(string asUser)
+    {
+        // Try to parse as session ID (number)
+        if (uint.TryParse(asUser, out uint sessionId))
+        {
+            return sessionId;
+        }
+
+        // Otherwise, treat as username and find their session
+        try
+        {
+            // Find explorer.exe process for the user
+            var explorerProcesses = Process.GetProcessesByName("explorer");
+            foreach (var proc in explorerProcesses)
+            {
+                try
+                {
+                    using var searcher = new ManagementObjectSearcher(
+                        $"SELECT * FROM Win32_Process WHERE ProcessId = {proc.Id}");
+                    foreach (ManagementObject obj in searcher.Get())
+                    {
+                        var owner = obj.InvokeMethod("GetOwner", null);
+                        if (owner != null)
+                        {
+                            var ownerInfo = (ManagementBaseObject)owner;
+                            var username = ownerInfo["User"]?.ToString();
+                            if (username != null && username.Equals(asUser, StringComparison.OrdinalIgnoreCase))
+                            {
+                                return (uint)proc.SessionId;
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    continue;
+                }
+            }
+
+            // Fallback: try active console session
+            var activeSession = WTSGetActiveConsoleSessionId();
+            if (activeSession != 0)
+            {
+                return activeSession;
+            }
+        }
+        catch (Exception ex)
+        {
+            throw new Exception($"Failed to find session for user '{asUser}': {ex.Message}");
+        }
+
+        throw new Exception($"Could not find active session for user '{asUser}'");
+    }
+
+    private Process CreateProcessAsUserWithToken(IntPtr token, string command, string arguments, out int processId)
+    {
+        var startupInfo = new STARTUPINFO
+        {
+            cb = Marshal.SizeOf(typeof(STARTUPINFO)),
+            lpReserved = "",
+            lpDesktop = "",
+            lpTitle = "",
+            dwFlags = 0,
+            cbReserved2 = 0,
+            lpReserved2 = IntPtr.Zero,
+            hStdInput = IntPtr.Zero,
+            hStdOutput = IntPtr.Zero,
+            hStdError = IntPtr.Zero
+        };
+
+        var processInfo = new PROCESS_INFORMATION();
+        var commandLine = $"\"{command}\" {arguments}";
+
+        bool success = CreateProcessAsUser(
+            token,
+            null,
+            commandLine,
+            IntPtr.Zero,
+            IntPtr.Zero,
+            false,
+            CREATE_UNICODE_ENVIRONMENT,
+            IntPtr.Zero,
+            null,
+            ref startupInfo,
+            out processInfo);
+
+        if (!success)
+        {
+            throw new Exception($"Failed to create process as user. Error: {Marshal.GetLastWin32Error()}");
+        }
+
+        // Store process ID before trying to get Process object
+        processId = processInfo.dwProcessId;
+        CloseHandle(processInfo.hThread);
+        
+        // Try to get Process object - if it fails, we still have the processId
+        try
+        {
+            return Process.GetProcessById(processId);
+        }
+        catch (Exception ex)
+        {
+            // If we can't get Process object, we'll need to handle it at call site
+            // For now, throw with processId info
+            throw new Exception($"Process created with PID {processId} but cannot access Process object: {ex.Message}");
+        }
+    }
+
+    public async Task<string> StartProcess(string executable, string? arguments = null, bool waitForExit = false, int timeoutMs = 30000, bool shellExecute = false, string? asUser = null, bool elevated = false, string? windowStyle = null)
     {
         try
         {
-            var processInfo = new ProcessStartInfo
+            // Validate that asUser and elevated are not both specified
+            if (!string.IsNullOrEmpty(asUser) && elevated)
             {
-                FileName = executable,
-                Arguments = arguments ?? "",
-                UseShellExecute = true,
-                CreateNoWindow = false
-            };
-
-            var process = Process.Start(processInfo);
-            if (process == null)
-            {
-                throw new Exception($"Failed to start process '{executable}'");
+                throw new ArgumentException("Cannot specify both asUser and elevated parameters. Choose one.");
             }
 
-            if (waitForExit)
+            Process? process = null;
+            IntPtr userToken = IntPtr.Zero;
+            IntPtr primaryToken = IntPtr.Zero;
+            int? asUserProcessId = null;
+
+            try
             {
-                using var cts = new CancellationTokenSource(timeoutMs);
-                var completed = process.WaitForExit(timeoutMs);
-                
-                if (!completed)
+                // Handle running as specific user
+                if (!string.IsNullOrEmpty(asUser))
                 {
-                    throw new TimeoutException($"Process '{executable}' did not exit within {timeoutMs}ms");
+                    uint sessionId = GetUserSessionId(asUser);
+                    if (!WTSQueryUserToken(sessionId, out userToken))
+                    {
+                        throw new Exception($"Failed to get user token for session {sessionId}. Error: {Marshal.GetLastWin32Error()}");
+                    }
+
+                    // Duplicate token to primary token for CreateProcessAsUser
+                    if (!DuplicateTokenEx(userToken, TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY,
+                        IntPtr.Zero, SECURITY_IMPERSONATION_LEVEL.SecurityImpersonation,
+                        TOKEN_TYPE.TokenPrimary, out primaryToken))
+                    {
+                        throw new Exception($"Failed to duplicate token. Error: {Marshal.GetLastWin32Error()}");
+                    }
+
+                    // Create process as user - store process ID separately
+                    process = CreateProcessAsUserWithToken(primaryToken, executable, arguments ?? "", out int processId);
+                    asUserProcessId = processId;
+                }
+                else if (elevated)
+                {
+                    // Run elevated using UAC prompt
+                    var parsedWindowStyle = ParseWindowStyle(windowStyle);
+                    var processInfo = new ProcessStartInfo
+                    {
+                        FileName = executable,
+                        Arguments = arguments ?? "",
+                        UseShellExecute = true,
+                        Verb = "runas",
+                        CreateNoWindow = !shellExecute, // Show window if not shellExecute mode
+                        WindowStyle = parsedWindowStyle
+                    };
+
+                    process = Process.Start(processInfo);
+                    if (process == null)
+                    {
+                        throw new Exception("Failed to start elevated process");
+                    }
+
+                    // For elevated processes, only wait if waitForExit is true
+                    if (waitForExit)
+                    {
+                        await WaitForProcessExit(process, timeoutMs, executable);
+                        return $"Elevated process '{executable}' started and exited with code {process.ExitCode}";
+                    }
+
+                    return $"Elevated process '{executable}' started successfully (PID: {process.Id})";
+                }
+                else
+                {
+                    // Standard execution - choose mode based on shellExecute parameter
+                    if (shellExecute)
+                    {
+                        // ShellExecute mode: redirect output, wait, return output
+                        var parsedWindowStyle = ParseWindowStyle(windowStyle);
+                        var processInfo = new ProcessStartInfo
+                        {
+                            FileName = executable,
+                            Arguments = arguments ?? "",
+                            UseShellExecute = false,
+                            RedirectStandardOutput = true,
+                            RedirectStandardError = true,
+                            CreateNoWindow = true,
+                            WindowStyle = parsedWindowStyle
+                        };
+
+                        process = new Process { StartInfo = processInfo };
+                    }
+                    else
+                    {
+                        // StartProcess mode: use shell execute, visible window
+                        var parsedWindowStyle = ParseWindowStyle(windowStyle);
+                        var processInfo = new ProcessStartInfo
+                        {
+                            FileName = executable,
+                            Arguments = arguments ?? "",
+                            UseShellExecute = true,
+                            CreateNoWindow = false,
+                            WindowStyle = parsedWindowStyle
+                        };
+
+                        process = Process.Start(processInfo);
+                        if (process == null)
+                        {
+                            throw new Exception($"Failed to start process '{executable}'");
+                        }
+                    }
                 }
 
-                return $"Process '{executable}' started and exited with code {process.ExitCode}";
-            }
+                if (process == null)
+                {
+                    throw new Exception("Failed to create process");
+                }
 
-            return $"Process '{executable}' started successfully (PID: {process.Id})";
+                // Handle output redirection for shellExecute mode
+                if (shellExecute && string.IsNullOrEmpty(asUser) && !elevated)
+                {
+                    // Standard shellExecute mode with output redirection
+                    var outputBuilder = new StringBuilder();
+                    var errorBuilder = new StringBuilder();
+
+                    process.OutputDataReceived += (sender, e) =>
+                    {
+                        if (e.Data != null)
+                            outputBuilder.AppendLine(e.Data);
+                    };
+
+                    process.ErrorDataReceived += (sender, e) =>
+                    {
+                        if (e.Data != null)
+                            errorBuilder.AppendLine(e.Data);
+                    };
+
+                    process.Start();
+                    process.BeginOutputReadLine();
+                    process.BeginErrorReadLine();
+
+                    await WaitForProcessExit(process, timeoutMs, executable);
+
+                    var output = outputBuilder.ToString().TrimEnd();
+                    var error = errorBuilder.ToString().TrimEnd();
+
+                    if (process.ExitCode != 0)
+                    {
+                        var errorMsg = string.IsNullOrEmpty(error) ? "Command failed" : error;
+                        return $"Exit code: {process.ExitCode}\n{errorMsg}\n{output}";
+                    }
+
+                    return string.IsNullOrEmpty(output) ? "Command executed successfully (no output)" : output;
+                }
+                else if (!string.IsNullOrEmpty(asUser))
+                {
+                    // asUser mode - can't redirect output, optionally wait
+                    // Use stored process ID instead of accessing process.Id which may fail
+                    int processId = asUserProcessId ?? process.Id;
+                    
+                    if (waitForExit)
+                    {
+                        await WaitForProcessExit(process, timeoutMs, executable);
+                        // Try to get exit code, but handle gracefully if it's not accessible
+                        try
+                        {
+                            int exitCode = process.ExitCode;
+                            return $"Process '{executable}' as user '{asUser}' started and exited with code {exitCode}";
+                        }
+                        catch
+                        {
+                            return $"Process '{executable}' as user '{asUser}' started and exited (PID: {processId})";
+                        }
+                    }
+                    return $"Process '{executable}' as user '{asUser}' started successfully (PID: {processId})";
+                }
+                else
+                {
+                    // Standard StartProcess mode
+                    if (waitForExit)
+                    {
+                        await WaitForProcessExit(process, timeoutMs, executable);
+                        return $"Process '{executable}' started and exited with code {process.ExitCode}";
+                    }
+
+                    return $"Process '{executable}' started successfully (PID: {process.Id})";
+                }
+            }
+            finally
+            {
+                if (primaryToken != IntPtr.Zero)
+                    CloseHandle(primaryToken);
+                if (userToken != IntPtr.Zero)
+                    CloseHandle(userToken);
+            }
+        }
+        catch (OperationCanceledException) when (timeoutMs != -1)
+        {
+            throw new TimeoutException($"Process '{executable}' timed out after {timeoutMs}ms");
         }
         catch (Exception ex)
         {

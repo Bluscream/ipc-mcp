@@ -130,36 +130,22 @@ public static partial class IpcTools
         }
     }
 
-    [McpServerTool, Description("Execute a shell command. Returns the command output. Will run as admin if the server is running as admin.")]
-    public static async Task<string> ShellExecute(
-        IServiceProvider serviceProvider,
-        [Description("Command or executable to run")] string command,
-        [Description("Command arguments")] string? arguments = null,
-        [Description("Timeout in milliseconds")] int timeout = 30000)
-    {
-        try
-        {
-            var service = GetService<ProcessService>(serviceProvider);
-            return await service.ShellExecute(command, arguments, timeout);
-        }
-        catch (Exception ex)
-        {
-            return FormatError("shell_execute", ex);
-        }
-    }
-
-    [McpServerTool, Description("Start an application with admin privileges. Can optionally wait for the process to exit.")]
-    public static string StartProcess(
+    [McpServerTool, Description("Start an application. Can optionally execute as shell command (redirect output and return it), wait for exit, run as specific user, or run elevated.")]
+    public static async Task<string> StartProcess(
         IServiceProvider serviceProvider,
         [Description("Path to executable or application name")] string executable,
         [Description("Command line arguments")] string? arguments = null,
         [Description("Whether to wait for the process to exit")] bool waitForExit = false,
-        [Description("Timeout in milliseconds if waiting for exit")] int timeout = 30000)
+        [Description("Timeout in milliseconds if waiting for exit. Use -1 for infinite timeout (no timeout).")] int timeout = 30000,
+        [Description("If true, executes as shell command (redirects output, waits for completion, and returns output). If false, starts process normally.")] bool shellExecute = false,
+        [Description("Run as specific user (username or session ID). The MCP client should determine the user. If not specified, runs as SYSTEM or current user.")] string? asUser = null,
+        [Description("Run with elevation (UAC prompt will appear). Cannot be combined with asUser.")] bool elevated = false,
+        [Description("Window style for the process (Normal, Hidden, Minimized, Maximized). Defaults to Normal.")] string? windowStyle = null)
     {
         try
         {
             var service = GetService<ProcessService>(serviceProvider);
-            return service.StartProcess(executable, arguments, waitForExit, timeout);
+            return await service.StartProcess(executable, arguments, waitForExit, timeout, shellExecute, asUser, elevated, windowStyle);
         }
         catch (Exception ex)
         {
