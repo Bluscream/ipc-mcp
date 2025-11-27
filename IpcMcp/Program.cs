@@ -34,6 +34,7 @@ builder.Services.AddSingleton<MemoryMappedFileService>();
 builder.Services.AddSingleton<PInvokeService>();
 builder.Services.AddSingleton<ComService>();
 builder.Services.AddSingleton<ProcessService>();
+builder.Services.AddSingleton<ServiceService>();
 builder.Services.AddSingleton(new TokenService(token));
 
 // Configure authentication

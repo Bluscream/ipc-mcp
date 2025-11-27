@@ -113,15 +113,23 @@ public class ProcessService
         }
     }
 
-    public string ListProcesses()
+    public string ListProcesses(int timeoutMs = 30000)
     {
         try
         {
+            var startTime = DateTime.UtcNow;
             var processes = Process.GetProcesses();
             var result = new StringBuilder();
+            var timeout = TimeSpan.FromMilliseconds(timeoutMs);
             
             foreach (var process in processes.OrderBy(p => p.ProcessName))
             {
+                // Check timeout periodically
+                if ((DateTime.UtcNow - startTime) > timeout)
+                {
+                    throw new TimeoutException($"Listing processes timed out after {timeoutMs}ms");
+                }
+                
                 try
                 {
                     var processName = process.ProcessName;
@@ -162,6 +170,10 @@ public class ProcessService
             }
             
             return result.ToString().TrimEnd();
+        }
+        catch (TimeoutException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
