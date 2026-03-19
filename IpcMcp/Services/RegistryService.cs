@@ -1,5 +1,7 @@
-using Microsoft.Win32;
+using System.Collections.Concurrent;
 using System.Text;
+using System.Text.RegularExpressions;
+using Microsoft.Win32;
 
 namespace IpcMcp.Services;
 
@@ -9,7 +11,7 @@ public class RegistryService
     {
         try
         {
-            RegistryKey? baseKey = GetRegistryHive(hive);
+            var baseKey = GetRegistryHive(hive);
             if (baseKey == null)
             {
                 throw new Exception($"Invalid registry hive: {hive}");
@@ -17,17 +19,7 @@ public class RegistryService
 
             using (baseKey)
             {
-                // Remove the hive prefix from keyPath if present
-                var cleanPath = keyPath;
-                if (cleanPath.StartsWith(hive + "\\", StringComparison.OrdinalIgnoreCase))
-                {
-                    cleanPath = cleanPath.Substring(hive.Length + 1);
-                }
-                else if (cleanPath.StartsWith(hive, StringComparison.OrdinalIgnoreCase))
-                {
-                    cleanPath = cleanPath.Substring(hive.Length);
-                }
-
+                var cleanPath = CleanRegistryPath(keyPath, hive);
                 using var key = baseKey.OpenSubKey(cleanPath);
                 if (key == null)
                 {
@@ -93,18 +85,7 @@ public class RegistryService
 
             using (baseKey)
             {
-                // Remove the hive prefix from keyPath if present
-                var cleanPath = keyPath;
-                if (cleanPath.StartsWith(hive + "\\", StringComparison.OrdinalIgnoreCase))
-                {
-                    cleanPath = cleanPath.Substring(hive.Length + 1);
-                }
-                else if (cleanPath.StartsWith(hive, StringComparison.OrdinalIgnoreCase))
-                {
-                    cleanPath = cleanPath.Substring(hive.Length);
-                }
-
-                // Create or open the key
+                var cleanPath = CleanRegistryPath(keyPath, hive);
                 using var key = baseKey.CreateSubKey(cleanPath, true);
                 if (key == null)
                 {
@@ -142,6 +123,259 @@ public class RegistryService
         }
     }
 
+    public string SearchRegistry(string query, string? path = null, bool searchKeys = true, bool searchValues = true, bool searchData = true, string hive = "HKEY_CURRENT_USER")
+    {
+        try
+        {
+            var baseKey = GetRegistryHive(hive);
+            if (baseKey == null)
+            {
+                throw new Exception($"Invalid registry hive: {hive}");
+            }
+
+            // Convert glob pattern to regex
+            var regexPattern = GlobToRegex(query);
+            var regex = new Regex(regexPattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+            // Determine starting path
+            var cleanPath = !string.IsNullOrEmpty(path) ? CleanRegistryPath(path, hive) : null;
+
+            var results = new ConcurrentBag<RegistrySearchResult>();
+
+            // Use parallel processing for fast search
+            var parallelOptions = new ParallelOptions
+            {
+                MaxDegreeOfParallelism = Environment.ProcessorCount
+            };
+
+            // Search starting from the specified path or root
+            if (cleanPath != null)
+            {
+                using (baseKey)
+                {
+                    using var startKey = baseKey.OpenSubKey(cleanPath);
+                    if (startKey != null)
+                    {
+                        SearchRegistryRecursive(startKey, hive + "\\" + cleanPath, regex, searchKeys, searchValues, searchData, results, parallelOptions);
+                    }
+                }
+            }
+            else
+            {
+                // Search from root of the hive
+                using (baseKey)
+                {
+                    SearchRegistryRecursive(baseKey, hive, regex, searchKeys, searchValues, searchData, results, parallelOptions);
+                }
+            }
+
+            // Format results
+            if (results.IsEmpty)
+            {
+                return "No matches found.";
+            }
+
+            var output = new StringBuilder();
+            output.AppendLine($"Found {results.Count} match(es):\n");
+
+            foreach (var result in results.OrderBy(r => r.Path))
+            {
+                output.AppendLine($"Path: {result.Path}");
+                if (!string.IsNullOrEmpty(result.MatchType))
+                {
+                    output.AppendLine($"  Match Type: {result.MatchType}");
+                }
+                if (!string.IsNullOrEmpty(result.Details))
+                {
+                    output.AppendLine($"  {result.Details}");
+                }
+                output.AppendLine();
+            }
+
+            return output.ToString().TrimEnd();
+        }
+        catch (Exception ex)
+        {
+            throw new Exception($"Failed to search registry: {ex.Message}");
+        }
+    }
+
+    private void SearchRegistryRecursive(RegistryKey key, string currentPath, Regex regex, bool searchKeys, bool searchValues, bool searchData, ConcurrentBag<RegistrySearchResult> results, ParallelOptions parallelOptions)
+    {
+        try
+        {
+            // Search in key names (current key)
+            if (searchKeys && regex.IsMatch(key.Name))
+            {
+                results.Add(new RegistrySearchResult
+                {
+                    Path = currentPath,
+                    MatchType = "Key Name",
+                    Details = $"Key name matches pattern"
+                });
+            }
+
+            // Search in value names and data
+            if (searchValues || searchData)
+            {
+                try
+                {
+                    var valueNames = key.GetValueNames();
+                    foreach (var valueName in valueNames)
+                    {
+                        // Search in value name
+                        if (searchValues && regex.IsMatch(valueName))
+                        {
+                            results.Add(new RegistrySearchResult
+                            {
+                                Path = currentPath,
+                                MatchType = "Value Name",
+                                Details = $"Value: {valueName}"
+                            });
+                        }
+
+                        // Search in value data
+                        if (searchData)
+                        {
+                            try
+                            {
+                                var value = key.GetValue(valueName);
+                                if (value != null)
+                                {
+                                    var valueStr = ConvertValueToString(value, key.GetValueKind(valueName));
+                                    if (regex.IsMatch(valueStr))
+                                    {
+                                        results.Add(new RegistrySearchResult
+                                        {
+                                            Path = currentPath,
+                                            MatchType = "Value Data",
+                                            Details = $"Value: {valueName} = {TruncateString(valueStr, 100)}"
+                                        });
+                                    }
+                                }
+                            }
+                            catch
+                            {
+                                // Skip values that can't be read
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    // Skip keys that can't be read
+                }
+            }
+
+            // Recursively search subkeys in parallel
+            try
+            {
+                var subKeyNames = key.GetSubKeyNames();
+                Parallel.ForEach(subKeyNames, parallelOptions, subKeyName =>
+                {
+                    try
+                    {
+                        using var subKey = key.OpenSubKey(subKeyName);
+                        if (subKey != null)
+                        {
+                            var subKeyPath = string.IsNullOrEmpty(currentPath) ? subKeyName : $"{currentPath}\\{subKeyName}";
+                            SearchRegistryRecursive(subKey, subKeyPath, regex, searchKeys, searchValues, searchData, results, parallelOptions);
+                        }
+                    }
+                    catch
+                    {
+                        // Skip subkeys that can't be accessed
+                    }
+                });
+            }
+            catch
+            {
+                // Skip if subkeys can't be enumerated
+            }
+        }
+        catch
+        {
+            // Skip keys that cause errors
+        }
+    }
+
+    private string GlobToRegex(string glob)
+    {
+        // Convert glob pattern to regex
+        // * matches any sequence of characters
+        // ? matches any single character
+        // Escape special regex characters
+        var regex = new StringBuilder();
+        regex.Append("^");
+        
+        foreach (var c in glob)
+        {
+            switch (c)
+            {
+                case '*':
+                    regex.Append(".*");
+                    break;
+                case '?':
+                    regex.Append(".");
+                    break;
+                case '.':
+                case '+':
+                case '(':
+                case ')':
+                case '[':
+                case ']':
+                case '{':
+                case '}':
+                case '^':
+                case '$':
+                case '|':
+                case '\\':
+                    regex.Append("\\").Append(c);
+                    break;
+                default:
+                    regex.Append(c);
+                    break;
+            }
+        }
+        
+        regex.Append("$");
+        return regex.ToString();
+    }
+
+    private string ConvertValueToString(object? value, RegistryValueKind kind)
+    {
+        if (value == null) return string.Empty;
+
+        return kind switch
+        {
+            RegistryValueKind.String or RegistryValueKind.ExpandString => value.ToString() ?? string.Empty,
+            RegistryValueKind.MultiString => string.Join(" ", ((string[])value)),
+            RegistryValueKind.DWord => value.ToString() ?? string.Empty,
+            RegistryValueKind.QWord => value.ToString() ?? string.Empty,
+            RegistryValueKind.Binary => BitConverter.ToString((byte[])value).Replace("-", ""),
+            _ => value.ToString() ?? string.Empty
+        };
+    }
+
+    private string TruncateString(string str, int maxLength)
+    {
+        if (str.Length <= maxLength) return str;
+        return str.Substring(0, maxLength) + "...";
+    }
+
+    private static string CleanRegistryPath(string keyPath, string hive)
+    {
+        if (keyPath.StartsWith(hive + "\\", StringComparison.OrdinalIgnoreCase))
+        {
+            return keyPath.Substring(hive.Length + 1);
+        }
+        if (keyPath.StartsWith(hive, StringComparison.OrdinalIgnoreCase))
+        {
+            return keyPath.Substring(hive.Length);
+        }
+        return keyPath;
+    }
+
     private RegistryKey? GetRegistryHive(string hive)
     {
         return hive.ToUpper() switch
@@ -153,5 +387,12 @@ public class RegistryService
             "HKEY_CURRENT_CONFIG" or "HKCC" => Registry.CurrentConfig,
             _ => null
         };
+    }
+
+    private class RegistrySearchResult
+    {
+        public string Path { get; set; } = string.Empty;
+        public string MatchType { get; set; } = string.Empty;
+        public string Details { get; set; } = string.Empty;
     }
 }

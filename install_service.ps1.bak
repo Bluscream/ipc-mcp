@@ -2,7 +2,7 @@
 # Requires NSSM (Non-Sucking Service Manager) or similar
 
 param(
-    [string]$Token = "<TOKEN_PLACEHOLDER>"
+    [string]$Token = "7f46fda81f4d4b51878cdf01aca45804"
 )
 
 $ErrorActionPreference = "Stop"

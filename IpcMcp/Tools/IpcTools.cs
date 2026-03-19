@@ -130,6 +130,27 @@ public static partial class IpcTools
         }
     }
 
+    [McpServerTool, Description("Search the Windows registry using glob patterns, similar to regedit search. Supports searching in key names, value names, and value data with multithreaded performance.")]
+    public static string SearchRegistry(
+        IServiceProvider serviceProvider,
+        [Description("Glob pattern to search for (e.g., '*test*', '*.exe')")] string query,
+        [Description("Registry path to start search from (optional, searches from hive root if not provided)")] string? path = null,
+        [Description("Whether to search in key names")] bool searchKeys = true,
+        [Description("Whether to search in value names")] bool searchValues = true,
+        [Description("Whether to search in value data")] bool searchData = true,
+        [Description("Registry hive (HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, HKEY_CLASSES_ROOT, HKEY_USERS, HKEY_CURRENT_CONFIG)")] string hive = "HKEY_CURRENT_USER")
+    {
+        try
+        {
+            var service = GetService<RegistryService>(serviceProvider);
+            return service.SearchRegistry(query, path, searchKeys, searchValues, searchData, hive);
+        }
+        catch (Exception ex)
+        {
+            return FormatError("search_registry", ex);
+        }
+    }
+
     [McpServerTool, Description("Start an application. Can optionally execute as shell command (redirect output and return it), wait for exit, run as specific user, or run elevated.")]
     public static async Task<string> StartProcess(
         IServiceProvider serviceProvider,
@@ -197,8 +218,8 @@ public static partial class IpcTools
             // List Windows
             try
             {
-                var windowService = GetService<WindowService>(serviceProvider);
-                var windows = windowService.ListWindows();
+                var windowsService = GetService<WindowsService>(serviceProvider);
+                var windows = windowsService.ListWindows();
                 result["Windows"] = windows.Select(w => new Dictionary<string, object>
                 {
                     { "Handle", w.Handle.ToString() },
@@ -289,6 +310,184 @@ public static partial class IpcTools
         catch (Exception ex)
         {
             return FormatError("list", ex);
+        }
+    }
+
+    [McpServerTool, Description("Log in a local Windows user from the login screen using username/password. Note: this stores the password temporarily in the registry.")]
+    public static string Login(
+        IServiceProvider serviceProvider,
+        [Description("Local Windows username")] string username,
+        [Description("User's password")] string password,
+        [Description("Domain (optional, use hostname for local account)")] string domain = "",
+        [Description("If true, do not clear the password from registry after login (Dangerous!)")] bool keepCredentials = false,
+        [Description("If true, try to forcibly connect the session to the console after login")] bool wtsConnect = false)
+    {
+        try
+        {
+            var service = GetService<LogonRegistryService>(serviceProvider);
+            return service.Login(username, password, domain, keepCredentials, wtsConnect);
+        }
+        catch (Exception ex)
+        {
+            return FormatError("login", ex);
+        }
+    }
+
+    [McpServerTool, Description("Locks the current Windows workstation.")]
+    public static async Task<string> Lock(IServiceProvider serviceProvider)
+    {
+        try
+        {
+            var service = GetService<WindowsService>(serviceProvider);
+            return await service.Lock();
+        }
+        catch (Exception ex)
+        {
+            return FormatError("lock", ex);
+        }
+    }
+
+    [McpServerTool, Description("Types text into the active logon session.")]
+    public static async Task<string> TypeLogon(
+        IServiceProvider serviceProvider,
+        [Description("The text to type (e.g. a PIN or password)")] string text,
+        [Description("Whether to press Enter after typing")] bool enter = true)
+    {
+        try
+        {
+            var service = GetService<LogonRegistryService>(serviceProvider);
+            return await service.TypeLogon(text, enter);
+        }
+        catch (Exception ex)
+        {
+            return FormatError("type_logon", ex);
+        }
+    }
+
+    [McpServerTool, Description("Clears any staged auto-logon credentials from the registry.")]
+    public static async Task<string> ClearCredentials(IServiceProvider serviceProvider)
+    {
+        try
+        {
+            var service = GetService<LogonRegistryService>(serviceProvider);
+            return await service.ClearCredentials();
+        }
+        catch (Exception ex)
+        {
+            return FormatError("clear_credentials", ex);
+        }
+    }
+
+    [McpServerTool, Description("Logs out the current user or all users.")]
+    public static string Logout(
+        IServiceProvider serviceProvider,
+        [Description("If true, logs out all active user sessions")] bool allUsers = false,
+        [Description("Optional message to display before logout")] string? message = null,
+        [Description("Delay in seconds before logout")] int timeout = 0)
+    {
+        try
+        {
+            var service = GetService<WindowsService>(serviceProvider);
+            return service.Logout(allUsers, message, timeout);
+        }
+        catch (Exception ex)
+        {
+            return FormatError("logout", ex);
+        }
+    }
+
+    [McpServerTool, Description("Shuts down the system.")]
+    public static string Shutdown(
+        IServiceProvider serviceProvider,
+        [Description("If true, forces applications to close")] bool force = false,
+        [Description("Delay in seconds before shutdown")] int timeout = 0,
+        [Description("Optional message to display")] string? message = null)
+    {
+        try
+        {
+            var service = GetService<WindowsService>(serviceProvider);
+            return service.Shutdown(reboot: false, force: force, timeout: timeout, message: message);
+        }
+        catch (Exception ex)
+        {
+            return FormatError("shutdown", ex);
+        }
+    }
+
+    [McpServerTool, Description("Reboots the system.")]
+    public static string Reboot(
+        IServiceProvider serviceProvider,
+        [Description("If true, forces applications to close")] bool force = false,
+        [Description("Delay in seconds before reboot")] int timeout = 0,
+        [Description("Optional message to display")] string? message = null)
+    {
+        try
+        {
+            var service = GetService<WindowsService>(serviceProvider);
+            return service.Shutdown(reboot: true, force: force, timeout: timeout, message: message);
+        }
+        catch (Exception ex)
+        {
+            return FormatError("reboot", ex);
+        }
+    }
+
+    [McpServerTool, Description("Stops the IPC MCP service.")]
+    public static string StopMcp(IServiceProvider serviceProvider)
+    {
+        try
+        {
+            var service = GetService<McpService>(serviceProvider);
+            return service.StopMcp();
+        }
+        catch (Exception ex)
+        {
+            return FormatError("stop_mcp", ex);
+        }
+    }
+
+    [McpServerTool, Description("Restarts the IPC MCP service gracefully.")]
+    public static string RestartMcp(IServiceProvider serviceProvider)
+    {
+        try
+        {
+            var service = GetService<McpService>(serviceProvider);
+            return service.RestartMcp();
+        }
+        catch (Exception ex)
+        {
+            return FormatError("restart_mcp", ex);
+        }
+    }
+
+    [McpServerTool, Description("Restarts the Windows Update service and triggers a search for updates.")]
+    public static string Update(
+        IServiceProvider serviceProvider,
+        [Description("If true, download and install updates automatically")] bool install = false,
+        [Description("If true, reboot if needed after installation")] bool rebootIfNeeded = false)
+    {
+        try
+        {
+            var service = GetService<UpdateService>(serviceProvider);
+            return service.Update(install, rebootIfNeeded);
+        }
+        catch (Exception ex)
+        {
+            return FormatError("update", ex);
+        }
+    }
+
+    [McpServerTool, Description("Returns a list of users discovered on the system.")]
+    public static List<UserAccountInfo> ListUsers(IServiceProvider serviceProvider)
+    {
+        try
+        {
+            var service = GetService<LogonRegistryService>(serviceProvider);
+            return service.ListUsers();
+        }
+        catch (Exception ex)
+        {
+            throw new Exception("list_users failed", ex);
         }
     }
 }

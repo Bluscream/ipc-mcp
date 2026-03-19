@@ -1,10 +1,8 @@
 using System.Diagnostics;
-using System.Text;
-using System.Threading;
 using System.Management;
 using System.Runtime.InteropServices;
-using System.Security.Principal;
-using System.Security;
+using System.Text;
+using System.Threading;
 
 namespace IpcMcp.Services;
 
@@ -42,13 +40,6 @@ public class ProcessService
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool SetTokenInformation(
-        IntPtr TokenHandle,
-        TOKEN_INFORMATION_CLASS TokenInformationClass,
-        ref uint TokenInformation,
-        uint TokenInformationLength);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct STARTUPINFO
@@ -96,18 +87,12 @@ public class ProcessService
         TokenImpersonation = 2
     }
 
-    private enum TOKEN_INFORMATION_CLASS
-    {
-        TokenSessionId = 12
-    }
-
     private const uint TOKEN_QUERY = 0x0008;
     private const uint TOKEN_DUPLICATE = 0x0002;
     private const uint TOKEN_ADJUST_DEFAULT = 0x0080;
     private const uint TOKEN_ADJUST_SESSIONID = 0x0100;
     private const uint TOKEN_ASSIGN_PRIMARY = 0x0001;
     private const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
-    private const int STARTF_USESTDHANDLES = 0x00000100;
 
     private ProcessWindowStyle ParseWindowStyle(string? windowStyle)
     {
@@ -223,7 +208,7 @@ public class ProcessService
         {
             cb = Marshal.SizeOf(typeof(STARTUPINFO)),
             lpReserved = "",
-            lpDesktop = "",
+            lpDesktop = "winsta0\\default", // Set to interactive desktop so windows are visible
             lpTitle = "",
             dwFlags = 0,
             cbReserved2 = 0,

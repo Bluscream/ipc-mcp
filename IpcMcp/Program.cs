@@ -2,6 +2,7 @@ using System.Security.Principal;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
@@ -10,12 +11,14 @@ using IpcMcp.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Ensure all hostnames are allowed (Fixes 400 Bad Request)
+builder.Configuration["AllowedHosts"] = "*";
+
 // Configure port and URLs
 var port = int.Parse(Environment.GetEnvironmentVariable("IPC_MCP_PORT") ?? "23481");
-builder.WebHost.UseUrls($"http://localhost:{port}");
 builder.WebHost.ConfigureKestrel(options =>
 {
-    options.ListenLocalhost(port);
+    options.ListenAnyIP(port);
 });
 
 // Parse command line arguments for token
@@ -34,9 +37,12 @@ builder.Services.AddSingleton<MemoryMappedFileService>();
 builder.Services.AddSingleton<PInvokeService>();
 builder.Services.AddSingleton<ComService>();
 builder.Services.AddSingleton<ProcessService>();
+builder.Services.AddSingleton<McpService>();
 builder.Services.AddSingleton<ServiceService>();
-builder.Services.AddSingleton<WindowService>();
+builder.Services.AddSingleton<WindowsService>();
 builder.Services.AddSingleton<RegistryService>();
+builder.Services.AddSingleton<LogonRegistryService>();
+builder.Services.AddSingleton<UpdateService>();
 builder.Services.AddSingleton(new TokenService(token));
 
 // Configure authentication
@@ -52,26 +58,15 @@ builder.Services
     .WithHttpTransport()
     .WithToolsFromAssembly();
 
-// Configure CORS - only allow localhost
+// Configure CORS - allow any origin for Tailscale/LAN access
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
-        policy.WithOrigins("http://localhost:*", "http://127.0.0.1:*")
+        policy.AllowAnyOrigin()
               .AllowAnyMethod()
               .AllowAnyHeader()
-              .SetIsOriginAllowed(origin => 
-              {
-                  try
-                  {
-                      var uri = new Uri(origin);
-                      return uri.Host == "localhost" || uri.Host == "127.0.0.1";
-                  }
-                  catch
-                  {
-                      return false;
-                  }
-              });
+              .WithExposedHeaders("Content-Type", "Cache-Control", "Last-Event-ID");
     });
 });
 
@@ -85,17 +80,38 @@ if (!IsRunningAsAdmin())
 }
 
 app.UseRouting();
+
+// Add middleware to normalize /mcp path to /mcp/ for streamable HTTP
+app.Use(async (context, next) =>
+{
+    var path = context.Request.Path.Value;
+    if (path != null && path.TrimEnd('/') == "/mcp" && !path.EndsWith("/"))
+    {
+        context.Request.Path = new PathString(path + "/");
+    }
+    await next();
+});
+
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 
+// Serve local dashboard directly from the application
+app.UseFileServer(new FileServerOptions
+{
+    FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(
+        Path.Combine(app.Environment.ContentRootPath, "Dashboard")),
+    RequestPath = "/dashboard",
+    EnableDefaultFiles = true
+});
+
 // Map MCP server with authorization at /mcp endpoint
 app.MapMcp("/mcp").RequireAuthorization();
 
-Console.WriteLine($"IPC MCP Server starting on http://localhost:{port}");
+Console.WriteLine($"IPC MCP Server starting on port {port}");
 Console.WriteLine("MCP Protocol: HTTP");
 Console.WriteLine("Authentication: Token required");
-Console.WriteLine("Binding: localhost only");
+Console.WriteLine("Binding: All interfaces (0.0.0.0)");
 Console.WriteLine("MCP Endpoint: /mcp");
 
 app.Run();
@@ -151,32 +167,87 @@ public class TokenAuthenticationHandler : AuthenticationHandler<TokenAuthenticat
             return Task.FromResult(AuthenticateResult.NoResult());
         }
 
-        // Check for token in Authorization header
+        // Check for SSE/EventStream requests - they may use query parameters for auth
+        var acceptHeader = Request.Headers["Accept"].FirstOrDefault();
+        var isEventStream = acceptHeader != null && acceptHeader.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase);
+        
+        // Try to authenticate with token from various sources
+        if (TryAuthenticateWithToken(isEventStream, out var principal))
+        {
+            var ticket = new AuthenticationTicket(principal, Scheme.Name);
+            return Task.FromResult(AuthenticateResult.Success(ticket));
+        }
+
+        // Log authentication failure for debugging
+        LogAuthenticationFailure(isEventStream);
+        return Task.FromResult(AuthenticateResult.Fail("Invalid or missing token"));
+    }
+
+    private bool TryAuthenticateWithToken(bool isEventStream, out ClaimsPrincipal principal)
+    {
+        principal = null!;
+
+        // Check query parameter for SSE requests
+        if (isEventStream && Request.Query.TryGetValue("token", out var queryToken))
+        {
+            if (queryToken == _tokenService.Token)
+            {
+                principal = CreatePrincipal();
+                return true;
+            }
+        }
+
+        // Check Authorization header
         var authHeader = Request.Headers["Authorization"].FirstOrDefault();
         if (authHeader != null && authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
         {
             var providedToken = authHeader.Substring("Bearer ".Length).Trim();
             if (providedToken == _tokenService.Token)
             {
-                var claims = new[] { new Claim(ClaimTypes.Name, "authenticated") };
-                var identity = new ClaimsIdentity(claims, Scheme.Name);
-                var principal = new ClaimsPrincipal(identity);
-                var ticket = new AuthenticationTicket(principal, Scheme.Name);
-                return Task.FromResult(AuthenticateResult.Success(ticket));
+                principal = CreatePrincipal();
+                return true;
             }
         }
 
-        // Check for token in X-API-Token header
+        // Check X-API-Token header
         var apiToken = Request.Headers["X-API-Token"].FirstOrDefault();
         if (apiToken == _tokenService.Token)
         {
-            var claims = new[] { new Claim(ClaimTypes.Name, "authenticated") };
-            var identity = new ClaimsIdentity(claims, Scheme.Name);
-            var principal = new ClaimsPrincipal(identity);
-            var ticket = new AuthenticationTicket(principal, Scheme.Name);
-            return Task.FromResult(AuthenticateResult.Success(ticket));
+            principal = CreatePrincipal();
+            return true;
         }
 
-        return Task.FromResult(AuthenticateResult.Fail("Invalid or missing token"));
+        return false;
+    }
+
+    private ClaimsPrincipal CreatePrincipal()
+        {
+            var claims = new[] { new Claim(ClaimTypes.Name, "authenticated") };
+            var identity = new ClaimsIdentity(claims, Scheme.Name);
+        return new ClaimsPrincipal(identity);
+    }
+
+    private void LogAuthenticationFailure(bool isEventStream)
+    {
+        var logLevel = isEventStream ? LogLevel.Debug : LogLevel.Warning;
+        var authHeader = Request.Headers["Authorization"].FirstOrDefault();
+        var apiToken = Request.Headers["X-API-Token"].FirstOrDefault();
+        var hasQueryToken = isEventStream && Request.Query.TryGetValue("token", out _);
+
+        Logger.Log(
+            logLevel,
+            "Authentication failed for {Method} {Path} (SSE: {IsEventStream}). Headers: Authorization={AuthHeader}, X-API-Token={ApiToken}, QueryToken={QueryToken}",
+                Request.Method,
+                Request.Path,
+            isEventStream,
+                authHeader != null ? "present" : "missing",
+            apiToken != null ? "present" : "missing",
+            hasQueryToken ? "present" : "missing");
+
+        if (isEventStream)
+        {
+            Logger.LogError(
+                "SSE authentication failed - token missing or invalid. Ensure token is sent in Authorization header (Bearer), X-API-Token header, or query parameter 'token'");
+        }
     }
 }

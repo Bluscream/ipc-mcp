@@ -6,13 +6,19 @@ namespace IpcMcp.Services;
 
 public class ComService
 {
+    private static readonly string[] CommonComObjects = 
+    {
+        "Shell.Application",
+        "Scripting.FileSystemObject",
+        "WScript.Shell"
+    };
+
     public List<string> ListComObjects()
     {
-        var comObjects = new List<string>();
+        var comObjects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         
         try
         {
-            // Query registry for COM objects
             using var classesRoot = Registry.ClassesRoot;
             using var clsidKey = classesRoot.OpenSubKey("CLSID");
             
@@ -23,62 +29,43 @@ public class ComService
                     try
                     {
                         using var clsidSubKey = clsidKey.OpenSubKey(clsid);
-                        if (clsidSubKey != null)
-                        {
-                            // Try to get ProgID
-                            using var progIdKey = clsidSubKey.OpenSubKey("ProgID");
-                            if (progIdKey != null)
-                            {
-                                var progId = progIdKey.GetValue(null)?.ToString();
-                                if (!string.IsNullOrEmpty(progId))
-                                {
-                                    comObjects.Add(progId);
-                                }
-                            }
-                            
-                            // Also try VersionIndependentProgID
-                            using var versionIndependentKey = clsidSubKey.OpenSubKey("VersionIndependentProgID");
-                            if (versionIndependentKey != null)
-                            {
-                                var progId = versionIndependentKey.GetValue(null)?.ToString();
-                                if (!string.IsNullOrEmpty(progId) && !comObjects.Contains(progId))
-                                {
-                                    comObjects.Add(progId);
-                                }
-                            }
-                        }
+                        if (clsidSubKey == null) continue;
+
+                        AddProgIdFromSubKey(clsidSubKey, "ProgID", comObjects);
+                        AddProgIdFromSubKey(clsidSubKey, "VersionIndependentProgID", comObjects);
                     }
                     catch
                     {
                         // Skip invalid entries
-                        continue;
                     }
                 }
-            }
-            
-            // If enumeration failed or returned empty, return common ones
-            if (comObjects.Count == 0)
-            {
-                comObjects.AddRange(new[]
-                {
-                    "Shell.Application",
-                    "Scripting.FileSystemObject",
-                    "WScript.Shell"
-                });
             }
         }
         catch
         {
-            // Fallback to common COM objects on error
-            comObjects.AddRange(new[]
-            {
-                "Shell.Application",
-                "Scripting.FileSystemObject",
-                "WScript.Shell"
-            });
+            // Fallback handled below
         }
         
-        return comObjects.Distinct().OrderBy(x => x).ToList();
+        // Fallback to common COM objects if enumeration failed or returned empty
+        if (comObjects.Count == 0)
+        {
+            foreach (var obj in CommonComObjects)
+            {
+                comObjects.Add(obj);
+            }
+        }
+        
+        return comObjects.OrderBy(x => x).ToList();
+    }
+
+    private static void AddProgIdFromSubKey(RegistryKey clsidSubKey, string subKeyName, HashSet<string> comObjects)
+    {
+        using var progIdKey = clsidSubKey.OpenSubKey(subKeyName);
+        var progId = progIdKey?.GetValue(null)?.ToString();
+        if (!string.IsNullOrEmpty(progId))
+        {
+            comObjects.Add(progId);
+        }
     }
 
     public string QueryComObject(string? progId = null, string? clsid = null)

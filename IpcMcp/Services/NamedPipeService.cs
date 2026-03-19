@@ -7,22 +7,20 @@ namespace IpcMcp.Services;
 
 public class NamedPipeService
 {
+    private const string PipePath = @"\\.\pipe\";
+
     public List<string> ListNamedPipes()
     {
-        var pipes = new List<string>();
         try
         {
-            var pipeNames = Directory.GetFiles(@"\\.\pipe\");
-            foreach (var pipe in pipeNames)
-            {
-                pipes.Add(pipe.Replace(@"\\.\pipe\", ""));
-            }
+            return Directory.GetFiles(PipePath)
+                .Select(pipe => pipe.Replace(PipePath, ""))
+                .ToList();
         }
         catch (Exception ex)
         {
             throw new Exception($"Failed to list named pipes: {ex.Message}");
         }
-        return pipes;
     }
 
     public async Task<string> ReadNamedPipe(string pipeName, int timeoutMs = 5000)
@@ -674,90 +672,12 @@ public class NamedPipeService
         }
     }
 
-    public async Task<string> SendAndReceiveNamedPipe(string pipeName, string message, int timeoutMs = 5000)
-    {
-        try
-        {
-            using var cts = new CancellationTokenSource(timeoutMs);
-            var startTime = DateTime.UtcNow;
-            
-            using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut);
-            
-            // Connect with timeout
-            var connectTask = client.ConnectAsync(cts.Token);
-            var connectTimeoutTask = Task.Delay(timeoutMs, CancellationToken.None);
-            var connectCompleted = await Task.WhenAny(connectTask, connectTimeoutTask);
-            
-            if (connectCompleted == connectTimeoutTask)
-            {
-                cts.Cancel();
-                throw new TimeoutException($"Timeout connecting to pipe '{pipeName}' after {timeoutMs}ms");
-            }
-            
-            await connectTask; // Ensure connection completed
-            
-            // Calculate remaining time for write
-            var elapsed = (DateTime.UtcNow - startTime).TotalMilliseconds;
-            var remainingTime = Math.Max(0, timeoutMs - (int)elapsed);
-            
-            if (remainingTime <= 0)
-            {
-                throw new TimeoutException($"Timeout on pipe '{pipeName}' - connection took too long");
-            }
-            
-            // Send with remaining timeout
-            var sendBytes = Encoding.UTF8.GetBytes(message);
-            using var writeCts = new CancellationTokenSource(remainingTime);
-            await client.WriteAsync(sendBytes, 0, sendBytes.Length, writeCts.Token);
-            await client.FlushAsync(writeCts.Token);
-            
-            // Calculate remaining time for read
-            elapsed = (DateTime.UtcNow - startTime).TotalMilliseconds;
-            remainingTime = Math.Max(0, timeoutMs - (int)elapsed);
-            
-            if (remainingTime <= 0)
-            {
-                throw new TimeoutException($"Timeout on pipe '{pipeName}' - write took too long");
-            }
-            
-            // Receive with remaining timeout
-            using var reader = new StreamReader(client, Encoding.UTF8);
-            using var readCts = new CancellationTokenSource(remainingTime);
-            
-            var readTask = reader.ReadToEndAsync(readCts.Token);
-            var readTimeoutTask = Task.Delay(remainingTime, CancellationToken.None);
-            var readCompleted = await Task.WhenAny(readTask, readTimeoutTask);
-            
-            if (readCompleted == readTimeoutTask)
-            {
-                readCts.Cancel();
-                throw new TimeoutException($"Timeout reading response from pipe '{pipeName}' after {timeoutMs}ms total");
-            }
-            
-            return await readTask;
-        }
-        catch (OperationCanceledException)
-        {
-            throw new TimeoutException($"Timeout on pipe '{pipeName}' after {timeoutMs}ms");
-        }
-        catch (TimeoutException)
-        {
-            throw; // Re-throw timeout exceptions as-is
-        }
-        catch (Exception ex)
-        {
-            throw new Exception($"Failed to send/receive on pipe '{pipeName}': {ex.Message}");
-        }
-    }
-
     public List<string> FindNamedPipe(string pattern, bool caseSensitive = false)
     {
         try
         {
-            var allPipes = ListNamedPipes();
             var comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
-            
-            return allPipes
+            return ListNamedPipes()
                 .Where(pipe => pipe.Contains(pattern, comparison))
                 .ToList();
         }

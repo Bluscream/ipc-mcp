@@ -9,6 +9,15 @@
     <Version>1.1.0</Version>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>ipc-mcp</AssemblyName>
+    <RootNamespace>IpcMcp</RootNamespace>
+    <Version>1.1.0</Version>
+  </PropertyGroup>
+  
   <ItemGroup>
     <PackageReference Include="ModelContextProtocol" Version="0.4.1-preview.1" />
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="0.4.1-preview.1" />

@@ -1,5 +1,5 @@
-using System.Text;
 using System.Management;
+using System.Text;
 
 namespace IpcMcp.Services;
 
@@ -45,130 +45,98 @@ public class ServiceService
         }
     }
 
+    private const int ServiceOperationTimeoutSeconds = 30;
+    private const int ServiceStateCheckIntervalMs = 500;
+
     public string StartService(string serviceName)
     {
-        try
-        {
-            using var searcher = new ManagementObjectSearcher(
-                $"SELECT * FROM Win32_Service WHERE Name = '{serviceName.Replace("'", "''")}'");
-            var services = searcher.Get().Cast<ManagementObject>().ToList();
-            
-            if (services.Count == 0)
-            {
-                throw new Exception($"Service '{serviceName}' not found");
-            }
-            
-            var service = services[0];
-            var state = service["State"]?.ToString() ?? "";
-            
-            if (state == "Running")
-            {
-                return $"Service '{serviceName}' is already running";
-            }
-            
-            if (state == "Start Pending")
-            {
-                return $"Service '{serviceName}' is already starting";
-            }
-            
-            // Invoke the StartService method
-            var result = service.InvokeMethod("StartService", null);
-            
-            if (result != null && (uint)result != 0)
-            {
-                var errorCode = (uint)result;
-                throw new Exception($"Failed to start service. Error code: {errorCode}");
-            }
-            
-            // Wait for service to start (up to 30 seconds)
-            var timeout = DateTime.UtcNow.AddSeconds(30);
-            while (DateTime.UtcNow < timeout)
-            {
-                service.Get();
-                state = service["State"]?.ToString() ?? "";
-                if (state == "Running")
-                {
-                    return $"Service '{serviceName}' started successfully";
-                }
-                if (state != "Start Pending")
-                {
-                    throw new Exception($"Service '{serviceName}' failed to start. Current state: {state}");
-                }
-                Thread.Sleep(500);
-            }
-            
-            throw new TimeoutException($"Service '{serviceName}' did not start within 30 seconds");
-        }
-        catch (Exception ex)
-        {
-            throw new Exception($"Failed to start service '{serviceName}': {ex.Message}");
-        }
+        return ControlService(serviceName, "StartService", "Running", "Start Pending", 
+            "start", "started", "starting");
     }
 
     public string StopService(string serviceName)
     {
+        return ControlService(serviceName, "StopService", "Stopped", "Stop Pending", 
+            "stop", "stopped", "stopping", checkAcceptStop: true);
+    }
+
+    private string ControlService(string serviceName, string methodName, string targetState, 
+        string pendingState, string actionVerb, string actionPast, string actionPresent, bool checkAcceptStop = false)
+    {
         try
         {
-            using var searcher = new ManagementObjectSearcher(
-                $"SELECT * FROM Win32_Service WHERE Name = '{serviceName.Replace("'", "''")}'");
-            var services = searcher.Get().Cast<ManagementObject>().ToList();
-            
-            if (services.Count == 0)
-            {
-                throw new Exception($"Service '{serviceName}' not found");
-            }
-            
-            var service = services[0];
+            var service = GetService(serviceName);
             var state = service["State"]?.ToString() ?? "";
-            
-            if (state == "Stopped")
+
+            if (state == targetState)
             {
-                return $"Service '{serviceName}' is already stopped";
+                return $"Service '{serviceName}' is already {actionPast}";
             }
-            
-            if (state == "Stop Pending")
+
+            if (state == pendingState)
             {
-                return $"Service '{serviceName}' is already stopping";
+                return $"Service '{serviceName}' is already {actionPresent}";
             }
-            
-            // Check if service can be stopped
-            var acceptStop = service["AcceptStop"]?.ToString() ?? "False";
-            if (acceptStop != "True")
+
+            if (checkAcceptStop)
             {
-                throw new Exception($"Service '{serviceName}' cannot be stopped");
+                var acceptStop = service["AcceptStop"]?.ToString() ?? "False";
+                if (acceptStop != "True")
+                {
+                    throw new Exception($"Service '{serviceName}' cannot be stopped");
+                }
             }
-            
-            // Invoke the StopService method
-            var result = service.InvokeMethod("StopService", null);
-            
+
+            var result = service.InvokeMethod(methodName, null);
             if (result != null && (uint)result != 0)
             {
-                var errorCode = (uint)result;
-                throw new Exception($"Failed to stop service. Error code: {errorCode}");
+                throw new Exception($"Failed to {actionVerb} service. Error code: {(uint)result}");
             }
-            
-            // Wait for service to stop (up to 30 seconds)
-            var timeout = DateTime.UtcNow.AddSeconds(30);
-            while (DateTime.UtcNow < timeout)
-            {
-                service.Get();
-                state = service["State"]?.ToString() ?? "";
-                if (state == "Stopped")
-                {
-                    return $"Service '{serviceName}' stopped successfully";
-                }
-                if (state != "Stop Pending")
-                {
-                    throw new Exception($"Service '{serviceName}' failed to stop. Current state: {state}");
-                }
-                Thread.Sleep(500);
-            }
-            
-            throw new TimeoutException($"Service '{serviceName}' did not stop within 30 seconds");
+
+            return WaitForServiceState(service, serviceName, targetState, pendingState, actionPast, actionPresent);
         }
         catch (Exception ex)
         {
-            throw new Exception($"Failed to stop service '{serviceName}': {ex.Message}");
+            throw new Exception($"Failed to {actionVerb} service '{serviceName}': {ex.Message}");
         }
+    }
+
+    private ManagementObject GetService(string serviceName)
+    {
+        using var searcher = new ManagementObjectSearcher(
+            $"SELECT * FROM Win32_Service WHERE Name = '{serviceName.Replace("'", "''")}'");
+        var services = searcher.Get().Cast<ManagementObject>().ToList();
+
+        if (services.Count == 0)
+        {
+            throw new Exception($"Service '{serviceName}' not found");
+        }
+
+        return services[0];
+    }
+
+    private string WaitForServiceState(ManagementObject service, string serviceName, 
+        string targetState, string pendingState, string actionPast, string actionPresent)
+    {
+        var timeout = DateTime.UtcNow.AddSeconds(ServiceOperationTimeoutSeconds);
+        while (DateTime.UtcNow < timeout)
+        {
+            service.Get();
+            var state = service["State"]?.ToString() ?? "";
+            
+            if (state == targetState)
+            {
+                return $"Service '{serviceName}' {actionPast} successfully";
+            }
+            
+            if (state != pendingState)
+            {
+                throw new Exception($"Service '{serviceName}' failed to {actionPast}. Current state: {state}");
+            }
+            
+            Thread.Sleep(ServiceStateCheckIntervalMs);
+        }
+
+        throw new TimeoutException($"Service '{serviceName}' did not {actionPast} within {ServiceOperationTimeoutSeconds} seconds");
     }
 }
